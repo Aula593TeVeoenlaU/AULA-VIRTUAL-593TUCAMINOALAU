@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, addDoc, query, orderBy, where } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
 // ==========================================
 // 🔴 CONFIGURACIÓN
@@ -23,6 +23,7 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
 let usuarioActual = null;
+let materiaActual = null;
 let temaActualInfo = null; 
 let quizActivo = null; 
 
@@ -32,20 +33,27 @@ let quizActivo = null;
 function mostrarSeccion(id) {
     document.querySelectorAll('.content-area > div').forEach(div => div.classList.add('hidden'));
     const seccion = document.getElementById(id);
-    if(seccion){
-        seccion.classList.remove('hidden');
-    }
+    if(seccion) seccion.classList.remove('hidden');
     window.scrollTo(0, 0);
 }
 
 document.addEventListener('DOMContentLoaded', function() {
     
+    // Navegación
     document.querySelectorAll('.btn-volver-dash').forEach(btn => {
-        btn.addEventListener("click", () => mostrarSeccion(usuarioActual && usuarioActual.email === ADMIN_EMAIL ? "dashboard-section" : "dashboard-section"));
+        btn.addEventListener("click", () => mostrarSeccion("dashboard-section"));
     });
     
+    document.querySelectorAll('.btn-volver-temas').forEach(btn => {
+        btn.addEventListener("click", () => mostrarSeccion("lista-temas-section"));
+    });
+
     const btnIrAdmin = document.getElementById("btn-ir-admin");
-    if(btnIrAdmin) btnIrAdmin.addEventListener("click", () => mostrarSeccion("admin-section"));
+    if(btnIrAdmin) btnIrAdmin.addEventListener("click", () => {
+        mostrarSeccion("admin-section");
+        cargarAdminGestion();
+        cargarAdminAlumnos();
+    });
     
     const btnVerDash = document.getElementById("btn-ver-dash-como-alumno");
     if(btnVerDash) btnVerDash.addEventListener("click", () => mostrarSeccion("dashboard-section"));
@@ -57,36 +65,74 @@ document.addEventListener('DOMContentLoaded', function() {
     const btnLogin = document.getElementById("btn-login");
     if(btnLogin){
         btnLogin.addEventListener("click", () => {
-            signInWithPopup(auth, provider).catch(err => alert("Error al iniciar sesión."));
+            document.getElementById("login-error").classList.add("hidden");
+            signInWithPopup(auth, provider).catch(err => {
+                document.getElementById("login-error").textContent = "Error de conexión. Intenta de nuevo.";
+                document.getElementById("login-error").classList.remove("hidden");
+            });
         });
     }
 
-    // Funciones del Administrador (Crear Temas)
+    // ==========================================
+    // ADMIN: AÑADIR ALUMNOS A LISTA BLANCA
+    // ==========================================
+    const btnAddAlumno = document.getElementById("btn-agregar-alumno");
+    if(btnAddAlumno){
+        btnAddAlumno.addEventListener("click", async () => {
+            const email = document.getElementById("input-nuevo-alumno").value.trim().toLowerCase();
+            if(!email) return alert("Escribe un correo válido");
+            
+            try {
+                await setDoc(doc(db, "alumnos_autorizados", email), {
+                    email: email,
+                    fecha_agregado: new Date().toISOString()
+                });
+                document.getElementById("input-nuevo-alumno").value = "";
+                alert("Alumno autorizado correctamente.");
+                cargarAdminAlumnos();
+            } catch(e) {
+                alert("Error: " + e.message);
+            }
+        });
+    }
+
+    // ==========================================
+    // ADMIN: CREAR TEMA (Híbrido IA + Estático)
+    // ==========================================
     const btnGenerarTema = document.getElementById("btn-generar-tema-admin");
     if(btnGenerarTema){
         btnGenerarTema.addEventListener("click", async () => {
-            const input = document.getElementById("input-nuevo-tema");
-            const tituloTema = input.value.trim();
-            if (!tituloTema) return alert("Escribe un tema válido.");
+            const materia = document.getElementById("input-materia").value;
+            const tituloTema = document.getElementById("input-nuevo-tema").value.trim();
+            const videosRaw = document.getElementById("input-videos").value;
+            const lecturasRaw = document.getElementById("input-lecturas").value;
+            
+            if (!tituloTema) return alert("El título es obligatorio.");
             
             const status = document.getElementById("admin-status");
             btnGenerarTema.disabled = true;
             status.style.color = "var(--primary-light)";
-            status.textContent = "Generando contenido con IA... Esto tomará unos segundos.";
+            status.innerHTML = "<i class='fas fa-spinner fa-spin'></i> Generando resumen con IA y guardando links...";
 
             try {
-                const urlBusqueda = tituloTema.replace(/ /g, '+');
-                const promptText = `Actúa como profesor universitario. Tema: "${tituloTema}".
-                Devuelve EXCLUSIVAMENTE un JSON con esta estructura exacta (sin formato markdown \`\`\`json):
+                // 1. Extraer Links (Función inteligente de parseo)
+                const extraerLinks = (texto) => {
+                    return texto.split('\n').filter(line => line.includes('http')).map(line => {
+                        const parts = line.split('http');
+                        let title = parts[0].replace(/^[\d\.\-\*]*\s*/, '').replace(/:\s*$/, '').trim();
+                        if(!title) title = "Enlace sugerido";
+                        return { titulo: title, url: 'http' + parts[1].trim() };
+                    });
+                };
+
+                const videosEstructurados = extraerLinks(videosRaw);
+                const lecturasEstructuradas = extraerLinks(lecturasRaw);
+
+                // 2. Pedir resumen de 150 palabras a Gemini
+                const promptText = `Actúa como profesor de ${materia}. Escribe un resumen introductorio de máximo 150 palabras para el tema: "${tituloTema}". 
+                Devuelve EXCLUSIVAMENTE un JSON con esta estructura exacta (sin formato markdown):
                 {
-                  "resumen_teorico": "Texto introductorio claro y conciso sobre el tema (máximo 100 palabras).",
-                  "videos_recomendados": [
-                    {"titulo": "Clase recomendada", "busqueda_youtube": "https://www.youtube.com/results?search_query=clase+universitaria+${urlBusqueda}"}
-                  ],
-                  "lecturas_gratuitas": [
-                    {"titulo": "Concepto principal", "url": "https://es.wikipedia.org/wiki/Especial:Buscar?search=${urlBusqueda}"}
-                  ]
-                  Es importante mencionar que debes dar en total 4 videos de youtube y 4 lecturas de links directos que el alumno logre usar con solo pinchar y que sean de fuentes académicas buenas entre ellas siempre khan academy.
+                  "resumen_teorico": "Tu texto aquí..."
                 }`;
 
                 const response = await fetch('/.netlify/functions/gemini', {
@@ -94,77 +140,82 @@ document.addEventListener('DOMContentLoaded', function() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         prompt: promptText,
-                        modelo: "gemini-3.6-flash"
+                        modelo: "gemini-1.5-flash" // Modelo rápido actualizado
                     })
                 });
 
                 const data = await response.json();
                 
-                // ESCUDO PROTECTOR PARA EVITAR QUE LA PÁGINA COLAPSE
                 if (!data.candidates || data.candidates.length === 0) {
-                    console.error("Detalle del error de Google:", data);
-                    let msjError = "La IA no devolvió contenido.";
-                    if(data.error && data.error.message) msjError = data.error.message;
-                    throw new Error(msjError);
+                    throw new Error("La IA no devolvió contenido.");
                 }
 
                 let rawText = data.candidates[0].content.parts[0].text;
-                const contenidoBase = JSON.parse(rawText.replace(/```json/g, '').replace(/```/g, '').trim());
+                const contenidoIA = JSON.parse(rawText.replace(/```json/g, '').replace(/```/g, '').trim());
 
-                const temaRef = collection(db, "temas_globales");
-                await addDoc(temaRef, {
+                // 3. Guardar en Firestore
+                await addDoc(collection(db, "temas_globales"), {
+                    materia: materia,
                     titulo: tituloTema,
-                    contenido: contenidoBase,
+                    resumen_teorico: contenidoIA.resumen_teorico,
+                    videos_recomendados: videosEstructurados,
+                    lecturas_recomendadas: lecturasEstructuradas,
                     fecha_creacion: new Date().toISOString(),
                     creador: usuarioActual.email
                 });
 
                 status.style.color = "var(--success)";
-                status.textContent = "✅ Tema generado y publicado correctamente.";
-                input.value = "";
-                cargarTemasGlobales('admin');
-                cargarTemasGlobales('alumno'); 
+                status.innerHTML = "<i class='fas fa-check'></i> Tema creado y guardado con éxito.";
+                document.getElementById("input-nuevo-tema").value = "";
+                document.getElementById("input-videos").value = "";
+                document.getElementById("input-lecturas").value = "";
+                cargarAdminGestion();
             } catch (error) {
                 console.error(error);
                 status.style.color = "var(--danger)";
-                status.textContent = `❌ Error: ${error.message}`;
+                status.innerHTML = `<i class='fas fa-times'></i> Error: ${error.message}`;
             } finally {
                 btnGenerarTema.disabled = false;
+                setTimeout(() => status.innerHTML = "", 5000);
             }
         });
     }
 
-    // Generación de simuladores
+    // ==========================================
+    // ALUMNO: GENERAR SIMULADOR
+    // ==========================================
     const btnGenerarSimulador = document.getElementById("btn-generar-simulador");
     if(btnGenerarSimulador){
         btnGenerarSimulador.addEventListener("click", async () => {
             const status = document.getElementById("simulador-status");
             
+            // Límite ahora es 5 al día
             const hoy = new Date().toISOString().split('T')[0];
             const limiteRef = doc(db, "usuarios", usuarioActual.uid, "limites", `${hoy}_${temaActualInfo.id}`);
             const limiteSnap = await getDoc(limiteRef);
             let generadosHoy = limiteSnap.exists() ? limiteSnap.data().cantidad : 0;
 
-            if (generadosHoy >= 2) {
-                status.textContent = "❌ Has alcanzado el límite de generar 2 simuladores nuevos de este tema por hoy.";
+            if (generadosHoy >= 5) {
+                status.style.color = "var(--danger)";
+                status.textContent = "❌ Has alcanzado el límite de 5 simuladores diarios para este tema.";
                 return;
             }
 
             btnGenerarSimulador.disabled = true;
-            status.style.color = "var(--primary)";
-            status.textContent = "Generando simulador personalizado...";
+            status.style.color = "var(--primary-light)";
+            status.innerHTML = "<i class='fas fa-circle-notch fa-spin'></i> Construyendo examen con IA...";
 
             try {
-                const promptText = `Actúa como creador de exámenes universitarios. Tema: "${temaActualInfo.titulo}".
-                Genera un cuestionario de 5 preguntas de opción múltiple.
-                Devuelve EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown \`\`\`json):
+                const promptText = `Actúa como creador de exámenes para admisión universitaria. Materia: ${materiaActual}. Tema: "${temaActualInfo.titulo}".
+                Genera un cuestionario de 5 preguntas de opción múltiple estrictamente sobre este tema.
+                Devuelve EXCLUSIVAMENTE un JSON con esta estructura (sin formato markdown):
                 {
                   "preguntas": [
                     {
                       "enunciado": "Pregunta...",
                       "opciones": ["A) op1", "B) op2", "C) op3", "D) op4"],
                       "respuesta_correcta": 0,
-                      "explicacion": "Breve justificación de la respuesta."
+                      "explicacion": "Breve justificación de por qué es la correcta."
                     }
                   ]
                 }`;
@@ -174,18 +225,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         prompt: promptText,
-                        modelo: "gemini-3.1-flash-lite"
+                        modelo: "gemini-1.5-flash" 
                     })
                 });
 
                 const data = await response.json();
                 
-                // ESCUDO PROTECTOR PARA SIMULADORES
                 if (!data.candidates || data.candidates.length === 0) {
-                    console.error("Detalle del error de Google:", data);
-                    let msjError = "La IA no devolvió las preguntas.";
-                    if(data.error && data.error.message) msjError = data.error.message;
-                    throw new Error(msjError);
+                    throw new Error("La IA falló al crear las preguntas.");
                 }
 
                 let rawText = data.candidates[0].content.parts[0].text;
@@ -201,7 +248,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 await setDoc(limiteRef, { cantidad: generadosHoy + 1 });
 
                 status.style.color = "var(--success)";
-                status.textContent = "✅ Simulador generado y guardado.";
+                status.textContent = "✅ Simulador listo.";
                 cargarMisSimuladores();
             } catch (e) {
                 console.error(e);
@@ -214,7 +261,9 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Lógica del Quiz - Enviar
+    // ==========================================
+    // ALUMNO: ENVIAR QUIZ Y CALIFICAR
+    // ==========================================
     const btnEnviarQuiz = document.getElementById("btn-enviar-quiz");
     if(btnEnviarQuiz){
         btnEnviarQuiz.addEventListener("click", async () => {
@@ -230,31 +279,36 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (seleccion && parseInt(seleccion.value) === p.respuesta_correcta) {
                     puntaje++;
                     divPreg.style.borderLeft = "6px solid var(--success)";
+                    divPreg.style.borderColor = "var(--success)";
                 } else {
                     divPreg.style.borderLeft = "6px solid var(--danger)";
+                    divPreg.style.borderColor = "var(--danger)";
                 }
             });
 
             const divResult = document.getElementById("resultado-quiz");
-            divResult.innerHTML = `Puntaje Final: <br><span style="font-size: 40px; font-weight: 800;">${puntaje} / ${quizActivo.length}</span>`;
+            divResult.innerHTML = `Puntaje Obtenido:<br><span style="font-size: 48px; font-weight: 800; color: ${puntaje === quizActivo.length ? 'var(--success)' : 'var(--primary)'};">${puntaje} / ${quizActivo.length}</span>`;
             divResult.style.display = "block";
             
             btnEnviarQuiz.classList.add("hidden"); 
             document.getElementById("btn-volver-estudio-desde-quiz").classList.remove("hidden");
-            window.scrollTo(0, document.body.scrollHeight);
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 
             await addDoc(collection(db, "usuarios", usuarioActual.uid, "historial_pruebas"), {
+                materia: materiaActual,
                 tema: temaActualInfo.titulo,
                 fecha: new Date().toLocaleString(),
                 puntaje: puntaje,
-                total: quizActivo.length
+                total: quizActivo.length,
+                timestamp: new Date().getTime()
             });
             cargarHistorialGlobal(); 
 
+            // Formsubmit silencioso
             fetch(`https://formsubmit.co/ajax/${CORREO_FORMSUBMIT}`, {
                 method: "POST", headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ _subject: `Simulador Completado - ${usuarioActual.email}`, usuario: usuarioActual.email, tema: temaActualInfo.titulo, resultado: `${puntaje}/${quizActivo.length}` })
-            }).catch(e => console.log("Error al enviar correo"));
+                body: JSON.stringify({ _subject: `Simulador Completado - ${usuarioActual.email}`, usuario: usuarioActual.email, materia: materiaActual, tema: temaActualInfo.titulo, resultado: `${puntaje}/${quizActivo.length}` })
+            }).catch(e => console.log("Opcional formsubmit falló"));
         });
     }
 
@@ -262,14 +316,29 @@ document.addEventListener('DOMContentLoaded', function() {
     if(btnVolverQuiz){
         btnVolverQuiz.addEventListener("click", () => mostrarSeccion("estudio-section"));
     }
-
 }); 
 
 // ==========================================
-// AUTENTICACIÓN
+// AUTENTICACIÓN Y VERIFICACIÓN
 // ==========================================
 onAuthStateChanged(auth, async (user) => {
     if (user) {
+        
+        // 1. Verificar Lista Blanca (Si NO es admin)
+        if (user.email !== ADMIN_EMAIL) {
+            const authSnap = await getDoc(doc(db, "alumnos_autorizados", user.email.toLowerCase()));
+            if (!authSnap.exists()) {
+                const errBox = document.getElementById("login-error");
+                if(errBox) {
+                    errBox.innerHTML = `Tu correo (<b>${user.email}</b>) no está autorizado.<br>Contacta a tu profesor para que te brinde acceso.`;
+                    errBox.classList.remove("hidden");
+                }
+                await signOut(auth);
+                return; // Detiene la ejecución
+            }
+        }
+
+        // 2. Si pasa, continuar login
         usuarioActual = user;
         const nombreUsr = document.getElementById("nombre-usuario");
         if(nombreUsr) nombreUsr.textContent = user.displayName;
@@ -281,11 +350,11 @@ onAuthStateChanged(auth, async (user) => {
         const btnAdmin = document.getElementById("btn-ir-admin");
         if (user.email === ADMIN_EMAIL) {
             if(btnAdmin) btnAdmin.classList.remove("hidden");
-            cargarTemasGlobales('admin');
             mostrarSeccion("admin-section");
+            cargarAdminGestion();
+            cargarAdminAlumnos();
         } else {
             if(btnAdmin) btnAdmin.classList.add("hidden");
-            cargarTemasGlobales('alumno');
             cargarHistorialGlobal();
             mostrarSeccion("dashboard-section");
         }
@@ -296,64 +365,72 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 // ==========================================
-// FUNCIONES GLOBALES 
+// FUNCIONES GLOBALES (ALUMNO)
 // ==========================================
-async function cargarTemasGlobales(vista) {
-    const contenedorAdmin = document.getElementById("admin-temas-list");
-    const contenedorAlumno = document.getElementById("student-temas-list");
-    
-    if (vista === 'admin' && contenedorAdmin) contenedorAdmin.innerHTML = "Cargando...";
-    if (vista === 'alumno' && contenedorAlumno) contenedorAlumno.innerHTML = "Cargando temas disponibles...";
 
-    const snap = await getDocs(collection(db, "temas_globales"));
-    let html = "";
+// Click en la tarjeta de materia
+window.abrirMateria = async function(materia) {
+    materiaActual = materia;
+    document.getElementById("titulo-materia-seleccionada").textContent = "Módulos de " + materia;
+    mostrarSeccion("lista-temas-section");
+
+    const contenedor = document.getElementById("student-temas-list");
+    contenedor.innerHTML = "<p>Cargando módulos...</p>";
+
+    const q = query(collection(db, "temas_globales"), where("materia", "==", materia));
+    const snap = await getDocs(q);
     
+    let html = "";
     if (snap.empty) {
-        html = "<p>No hay temas creados por el administrador aún.</p>";
+        html = "<p style='grid-column: 1/-1;'>Pronto añadiremos módulos para esta materia.</p>";
     } else {
         snap.forEach(doc => {
             const data = doc.data();
             html += `
-                <div class="topic-card">
+                <div class="topic-card" onclick="abrirTemaEstudio('${doc.id}', '${data.titulo.replace(/'/g, "\\'")}')">
+                    <div style="font-size: 24px; color: var(--primary-light); margin-bottom: 10px;"><i class="fas fa-layer-group"></i></div>
                     <h3>${data.titulo}</h3>
-                    <button onclick="abrirTema('${doc.id}', '${data.titulo}')" style="width:100%; margin-top: 10px;">
-                        📖 Ingresar a Estudiar
-                    </button>
+                    <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene resumen IA, recursos y simuladores.</p>
+                    <button class="btn-outline" style="width:100%; border-color: var(--border);">📖 Entrar al Módulo</button>
                 </div>`;
         });
     }
-
-    if (vista === 'admin' && contenedorAdmin) contenedorAdmin.innerHTML = html;
-    if (vista === 'alumno' && contenedorAlumno) contenedorAlumno.innerHTML = html;
+    contenedor.innerHTML = html;
 }
 
-window.abrirTema = async function(idGlobal, titulo) {
+window.abrirTemaEstudio = async function(idGlobal, titulo) {
     temaActualInfo = { id: idGlobal, titulo: titulo };
-    const tituloTemaDOM = document.getElementById("titulo-tema-estudio");
-    if(tituloTemaDOM) tituloTemaDOM.textContent = titulo;
+    document.getElementById("titulo-tema-estudio").textContent = titulo;
     mostrarSeccion("estudio-section");
 
     const docSnap = await getDoc(doc(db, "temas_globales", idGlobal));
     if (docSnap.exists()) {
-        const data = docSnap.data().contenido;
+        const data = docSnap.data();
         
+        // Render Resumen
         const contResumen = document.getElementById("contenido-resumen");
-        if(contResumen && typeof marked !== 'undefined') {
-            contResumen.innerHTML = marked.parse(data.resumen_teorico);
-        } else if (contResumen) {
-             contResumen.innerHTML = data.resumen_teorico;
+        if(typeof marked !== 'undefined') {
+            contResumen.innerHTML = marked.parse(data.resumen_teorico || "Sin resumen.");
+        } else {
+            contResumen.innerHTML = data.resumen_teorico || "Sin resumen.";
         }
         
+        // Render Videos Estáticos
         const listaVid = document.getElementById("lista-videos");
-        if(listaVid) {
+        if (data.videos_recomendados && data.videos_recomendados.length > 0) {
             listaVid.innerHTML = data.videos_recomendados.map(v => 
-            `<li>🎬 <a href="${v.busqueda_youtube}" target="_blank">${v.titulo}</a></li>`).join('');
+                `<li><i class="fab fa-youtube" style="color:var(--danger)"></i> <a href="${v.url}" target="_blank">${v.titulo}</a></li>`).join('');
+        } else {
+            listaVid.innerHTML = "<p style='font-size:14px; color:var(--text-light); padding:0 15px;'>No hay videos definidos.</p>";
         }
             
+        // Render Lecturas Estáticas
         const listaLec = document.getElementById("lista-lecturas");
-        if(listaLec){
-             listaLec.innerHTML = data.lecturas_gratuitas.map(l => 
-            `<li>📄 <a href="${l.url}" target="_blank">${l.titulo}</a></li>`).join('');
+        if (data.lecturas_recomendadas && data.lecturas_recomendadas.length > 0) {
+            listaLec.innerHTML = data.lecturas_recomendadas.map(l => 
+                `<li><i class="fas fa-file-alt" style="color:var(--primary-light)"></i> <a href="${l.url}" target="_blank">${l.titulo}</a></li>`).join('');
+        } else {
+             listaLec.innerHTML = "<p style='font-size:14px; color:var(--text-light); padding:0 15px;'>No hay lecturas definidas.</p>";
         }
     }
 
@@ -362,9 +439,7 @@ window.abrirTema = async function(idGlobal, titulo) {
 
 async function cargarMisSimuladores() {
     const contenedor = document.getElementById("lista-mis-simuladores");
-    if(!contenedor) return;
-    
-    contenedor.innerHTML = "Cargando tus simuladores...";
+    contenedor.innerHTML = "<p>Buscando historial...</p>";
     
     const q = query(
         collection(db, "usuarios", usuarioActual.uid, "simuladores_guardados"),
@@ -373,7 +448,7 @@ async function cargarMisSimuladores() {
     
     const snap = await getDocs(q);
     if (snap.empty) {
-        contenedor.innerHTML = "<p style='grid-column: 1/-1;'>No has generado simuladores para este tema aún.</p>";
+        contenedor.innerHTML = "<p style='grid-column: 1/-1; color: var(--text-light);'>Aún no has generado simuladores. ¡Crea el primero!</p>";
         return;
     }
 
@@ -382,8 +457,9 @@ async function cargarMisSimuladores() {
     snap.forEach(doc => {
         const data = doc.data();
         const safePreguntas = JSON.stringify(data.preguntas).replace(/'/g, "&apos;").replace(/"/g, "&quot;");
-        const btnHtml = `<button class="btn-outline" style="width: 100%; padding: 15px;" onclick="iniciarQuiz(${safePreguntas})">📝 Simulador #${cont}</button>`;
-        html += btnHtml;
+        html += `<button class="btn-outline" style="padding: 15px; font-size: 14px; justify-content: flex-start; text-align:left;" onclick="iniciarQuiz(${safePreguntas})">
+                    <i class="fas fa-file-signature"></i> Examen Práctico #${cont}
+                 </button>`;
         cont++;
     });
     contenedor.innerHTML = html;
@@ -392,42 +468,34 @@ async function cargarMisSimuladores() {
 window.iniciarQuiz = function(preguntas) {
     quizActivo = preguntas;
     
-    const tituloTemaQuiz = document.getElementById("quiz-tema-titulo");
-    if(tituloTemaQuiz) tituloTemaQuiz.textContent = "Tema: " + temaActualInfo.titulo;
-    
-    const btnEnviar = document.getElementById("btn-enviar-quiz");
-    if(btnEnviar) btnEnviar.classList.remove("hidden"); 
-    
-    const btnVolver = document.getElementById("btn-volver-estudio-desde-quiz");
-    if(btnVolver) btnVolver.classList.add("hidden");
-    
-    const resQuiz = document.getElementById("resultado-quiz");
-    if(resQuiz) resQuiz.style.display = "none";
+    document.getElementById("quiz-tema-titulo").textContent = materiaActual + " - " + temaActualInfo.titulo;
+    document.getElementById("btn-enviar-quiz").classList.remove("hidden"); 
+    document.getElementById("btn-volver-estudio-desde-quiz").classList.add("hidden");
+    document.getElementById("resultado-quiz").style.display = "none";
     
     const contenedor = document.getElementById("contenedor-preguntas");
-    if(!contenedor) return;
-    
     contenedor.innerHTML = "";
 
     quizActivo.forEach((p, index) => {
         let opcionesHtml = p.opciones.map((opc, i) => `
             <div class="opcion">
-                <label><input type="radio" name="q${index}" value="${i}"> ${opc}</label>
+                <label><input type="radio" name="q${index}" value="${i}"> <span>${opc}</span></label>
             </div>
         `).join('');
 
         contenedor.innerHTML += `
             <div class="pregunta" id="div-q${index}">
-                <p style="font-size: 1.1em; font-weight: bold; color: var(--primary);">Pregunta ${index + 1}: ${p.enunciado}</p>
+                <p style="font-size: 1.1em; font-weight: 600; color: var(--primary); margin-top:0;">
+                    <span style="color: var(--secondary); margin-right: 5px;">${index + 1}.</span> ${p.enunciado}
+                </p>
                 ${opcionesHtml}
-                <div class="hidden explicacion" id="exp-q${index}" style="background: #EBF8FF; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 4px solid var(--secondary);">
-                    <p style="margin:0;">💡 <strong>Justificación:</strong> ${p.explicacion}</p>
+                <div class="hidden explicacion" id="exp-q${index}" style="background: #F0FDF4; padding: 15px 20px; border-radius: 10px; margin-top: 15px; border-left: 4px solid var(--success);">
+                    <p style="margin:0; color: #166534;"><i class="fas fa-lightbulb" style="color:var(--secondary)"></i> <strong>Justificación:</strong> ${p.explicacion}</p>
                 </div>
             </div>
         `;
     });
     
-    // Disparador para renderizar fórmulas matemáticas en caso de usar LaTeX
     if (window.MathJax) {
         MathJax.typesetPromise();
     }
@@ -439,23 +507,101 @@ async function cargarHistorialGlobal() {
     const contenedor = document.getElementById("lista-historial-global");
     if (!usuarioActual || !contenedor) return;
     
-    const snap = await getDocs(collection(db, "usuarios", usuarioActual.uid, "historial_pruebas"));
+    // Obtenemos los últimos 15 intentos ordenados por fecha
+    const q = query(collection(db, "usuarios", usuarioActual.uid, "historial_pruebas"), orderBy("timestamp", "desc"));
+    const snap = await getDocs(q);
+    
     if (snap.empty) {
-        contenedor.innerHTML = "<li>Aún no has resuelto ningún simulador.</li>";
+        contenedor.innerHTML = "<li style='justify-content:center; color: var(--text-light);'>Aún no tienes historial de prácticas.</li>";
         return;
     }
 
-    let historial = [];
-    snap.forEach(doc => historial.push(doc.data()));
-    historial.reverse(); 
-
-    contenedor.innerHTML = historial.map(h => 
-        `<li>
-            <div style="flex:1"><strong>${h.tema}</strong></div>
-            <div style="color: #A0AEC0; font-size: 14px; margin-right: 15px;">${h.fecha}</div>
-            <div style="background: var(--primary-light); color: white; padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 14px;">
+    let html = "";
+    snap.forEach(doc => {
+        const h = doc.data();
+        const calificacion = (h.puntaje / h.total) * 100;
+        const color = calificacion >= 70 ? 'var(--success)' : (calificacion >= 40 ? 'var(--secondary)' : 'var(--danger)');
+        
+        html += `
+        <li>
+            <div style="margin-right: 15px; font-size: 20px; color: var(--text-light);"><i class="fas fa-clipboard-check"></i></div>
+            <div style="flex:1">
+                <strong style="display:block; margin-bottom: 2px;">${h.tema}</strong>
+                <span style="font-size: 13px; color: var(--text-light);">${h.materia} • ${h.fecha.split(',')[0]}</span>
+            </div>
+            <div style="background: ${color}; color: white; padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 14px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
                 ${h.puntaje} / ${h.total}
             </div>
-        </li>`
-    ).join('');
+        </li>`;
+    });
+    contenedor.innerHTML = html;
+}
+
+// ==========================================
+// FUNCIONES GLOBALES (ADMIN)
+// ==========================================
+async function cargarAdminAlumnos() {
+    const contenedor = document.getElementById("lista-alumnos-admin");
+    if(!contenedor) return;
+    
+    const snap = await getDocs(collection(db, "alumnos_autorizados"));
+    if(snap.empty) {
+        contenedor.innerHTML = "<p>No hay alumnos autorizados aún.</p>";
+        return;
+    }
+    
+    let html = "";
+    snap.forEach(doc => {
+        html += `
+        <div class="admin-list-item">
+            <div><i class="fas fa-user-check" style="color:var(--success); margin-right: 10px;"></i> <strong>${doc.data().email}</strong></div>
+            <button class="btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="eliminarAlumno('${doc.id}')"><i class="fas fa-trash"></i></button>
+        </div>`;
+    });
+    contenedor.innerHTML = html;
+}
+
+window.eliminarAlumno = async function(emailId) {
+    if(confirm(`¿Estás seguro de quitar el acceso a ${emailId}?`)){
+        await deleteDoc(doc(db, "alumnos_autorizados", emailId));
+        cargarAdminAlumnos();
+    }
+}
+
+async function cargarAdminGestion() {
+    const contenedor = document.getElementById("lista-gestion-temas");
+    if(!contenedor) return;
+    
+    const snap = await getDocs(collection(db, "temas_globales"));
+    if(snap.empty){
+        contenedor.innerHTML = "<p>No has creado ningún módulo aún.</p>";
+        return;
+    }
+    
+    let html = "";
+    snap.forEach(doc => {
+        const d = doc.data();
+        html += `
+        <div class="admin-list-item" style="flex-direction: column; align-items: stretch; gap: 10px;">
+            <div style="display:flex; justify-content: space-between; align-items:center;">
+                <div>
+                    <span style="background: var(--bg); padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; margin-right: 10px;">${d.materia}</span>
+                    <strong>${d.titulo}</strong>
+                </div>
+                <button class="btn-outline" style="padding: 6px 12px; font-size: 12px; color: var(--danger); border-color: var(--danger);" onclick="eliminarTema('${doc.id}')"><i class="fas fa-trash"></i></button>
+            </div>
+            <div style="font-size: 13px; color: var(--text-light);">
+                <i class="fab fa-youtube"></i> ${d.videos_recomendados ? d.videos_recomendados.length : 0} Videos | 
+                <i class="fas fa-book-open"></i> ${d.lecturas_recomendadas ? d.lecturas_recomendadas.length : 0} Lecturas
+            </div>
+        </div>`;
+    });
+    contenedor.innerHTML = html;
+}
+
+window.eliminarTema = async function(id) {
+    if(confirm("¿Eliminar este módulo definitivamente? Esto afectará a los alumnos que lo estén estudiando.")){
+        await deleteDoc(doc(db, "temas_globales", id));
+        cargarAdminGestion();
+    }
 }

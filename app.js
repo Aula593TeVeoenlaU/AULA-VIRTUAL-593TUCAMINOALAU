@@ -3,9 +3,8 @@ import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signO
 import { getFirestore, doc, getDoc, setDoc, collection, getDocs, addDoc, query, orderBy, where } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
 // ==========================================
-// 🔴 CONFIGURACIÓN (REEMPLAZA CON TUS DATOS)
+// 🔴 CONFIGURACIÓN
 // ==========================================
-// ¡LA CLAVE DE GEMINI YA NO ESTÁ AQUÍ! AHORA ES SEGURA.
 const ADMIN_EMAIL = "videosc847@gmail.com"; 
 const CORREO_FORMSUBMIT = "sebastianneto84@gmail.com";
 
@@ -24,8 +23,8 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
 let usuarioActual = null;
-let temaActualInfo = null; // { id, titulo }
-let quizActivo = null; // Array de preguntas del simulador en curso
+let temaActualInfo = null; 
+let quizActivo = null; 
 
 // ==========================================
 // CONTROL DE INTERFAZ
@@ -41,7 +40,6 @@ function mostrarSeccion(id) {
 
 document.addEventListener('DOMContentLoaded', function() {
     
-    // Listeners de navegación
     document.querySelectorAll('.btn-volver-dash').forEach(btn => {
         btn.addEventListener("click", () => mostrarSeccion(usuarioActual && usuarioActual.email === ADMIN_EMAIL ? "dashboard-section" : "dashboard-section"));
     });
@@ -56,7 +54,6 @@ document.addEventListener('DOMContentLoaded', function() {
         btn.addEventListener("click", () => signOut(auth));
     });
 
-    // Login
     const btnLogin = document.getElementById("btn-login");
     if(btnLogin){
         btnLogin.addEventListener("click", () => {
@@ -74,6 +71,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const status = document.getElementById("admin-status");
             btnGenerarTema.disabled = true;
+            status.style.color = "var(--primary-light)";
             status.textContent = "Generando contenido con IA... Esto tomará unos segundos.";
 
             try {
@@ -91,7 +89,6 @@ document.addEventListener('DOMContentLoaded', function() {
                   Es importante mencionar que debes dar en total 4 videos de youtube y 4 lecturas de links directos que el alumno logre usar con solo pinchar y que sean de fuentes académicas buenas entre ellas siempre khan academy.
                 }`;
 
-                // NUEVA LLAMADA AL BACKEND DE NETLIFY
                 const response = await fetch('/.netlify/functions/gemini', {
                     method: "POST", 
                     headers: { "Content-Type": "application/json" },
@@ -102,10 +99,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
 
                 const data = await response.json();
+                
+                // ESCUDO PROTECTOR PARA EVITAR QUE LA PÁGINA COLAPSE
+                if (!data.candidates || data.candidates.length === 0) {
+                    console.error("Detalle del error de Google:", data);
+                    let msjError = "La IA no devolvió contenido.";
+                    if(data.error && data.error.message) msjError = data.error.message;
+                    throw new Error(msjError);
+                }
+
                 let rawText = data.candidates[0].content.parts[0].text;
                 const contenidoBase = JSON.parse(rawText.replace(/```json/g, '').replace(/```/g, '').trim());
 
-                // Guardar en la colección global
                 const temaRef = collection(db, "temas_globales");
                 await addDoc(temaRef, {
                     titulo: tituloTema,
@@ -114,13 +119,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     creador: usuarioActual.email
                 });
 
+                status.style.color = "var(--success)";
                 status.textContent = "✅ Tema generado y publicado correctamente.";
                 input.value = "";
                 cargarTemasGlobales('admin');
                 cargarTemasGlobales('alumno'); 
             } catch (error) {
                 console.error(error);
-                status.textContent = "❌ Error al generar el tema. Revisa la consola.";
+                status.style.color = "var(--danger)";
+                status.textContent = `❌ Error: ${error.message}`;
             } finally {
                 btnGenerarTema.disabled = false;
             }
@@ -144,6 +151,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             btnGenerarSimulador.disabled = true;
+            status.style.color = "var(--primary)";
             status.textContent = "Generando simulador personalizado...";
 
             try {
@@ -161,7 +169,6 @@ document.addEventListener('DOMContentLoaded', function() {
                   ]
                 }`;
 
-                // NUEVA LLAMADA AL BACKEND DE NETLIFY
                 const response = await fetch('/.netlify/functions/gemini', {
                     method: "POST", 
                     headers: { "Content-Type": "application/json" },
@@ -172,6 +179,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
 
                 const data = await response.json();
+                
+                // ESCUDO PROTECTOR PARA SIMULADORES
+                if (!data.candidates || data.candidates.length === 0) {
+                    console.error("Detalle del error de Google:", data);
+                    let msjError = "La IA no devolvió las preguntas.";
+                    if(data.error && data.error.message) msjError = data.error.message;
+                    throw new Error(msjError);
+                }
+
                 let rawText = data.candidates[0].content.parts[0].text;
                 const simuladorJSON = JSON.parse(rawText.replace(/```json/g, '').replace(/```/g, '').trim());
 
@@ -184,14 +200,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 await setDoc(limiteRef, { cantidad: generadosHoy + 1 });
 
+                status.style.color = "var(--success)";
                 status.textContent = "✅ Simulador generado y guardado.";
                 cargarMisSimuladores();
             } catch (e) {
                 console.error(e);
-                status.textContent = "❌ Error al generar el simulador.";
+                status.style.color = "var(--danger)";
+                status.textContent = `❌ Error: ${e.message}`;
             } finally {
                 btnGenerarSimulador.disabled = false;
-                setTimeout(() => status.textContent = "", 4000);
+                setTimeout(() => status.textContent = "", 6000);
             }
         });
     }
@@ -240,7 +258,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Volver desde Quiz
     const btnVolverQuiz = document.getElementById("btn-volver-estudio-desde-quiz");
     if(btnVolverQuiz){
         btnVolverQuiz.addEventListener("click", () => mostrarSeccion("estudio-section"));
@@ -409,6 +426,12 @@ window.iniciarQuiz = function(preguntas) {
             </div>
         `;
     });
+    
+    // Disparador para renderizar fórmulas matemáticas en caso de usar LaTeX
+    if (window.MathJax) {
+        MathJax.typesetPromise();
+    }
+    
     mostrarSeccion("quiz-section");
 }
 

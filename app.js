@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         prompt: promptText,
-                        modelo: "gemini-3.8-flash" // Modelo rápido actualizado
+                        modelo: "gemini-3.6-flash" // Modelo rápido actualizado
                     })
                 });
 

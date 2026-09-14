@@ -390,7 +390,7 @@ window.abrirMateria = async function(materia) {
                 <div class="topic-card" onclick="abrirTemaEstudio('${doc.id}', '${data.titulo.replace(/'/g, "\\'")}')">
                     <div style="font-size: 24px; color: var(--primary-light); margin-bottom: 10px;"><i class="fas fa-layer-group"></i></div>
                     <h3>${data.titulo}</h3>
-                    <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene recursos para estudio extraidos de internet (videos y textos) y simuladores generados por IA.</p>
+                    <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene recursos para estudio extraidos de internet (videos y textos) y cuestionarios de estudio generados por IA.</p>
                     <button class="btn-outline" style="width:100%; border-color: var(--border);">📖 Entrar al Módulo</button>
                 </div>`;
         });
@@ -775,7 +775,7 @@ window.abrirMateria = async function(materia) {
                     <i class="fas fa-layer-group"></i>
                 </div>
                 <h3>${data.titulo}</h3>
-                <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene recursos para estudio extraidos de internet (videos y textos) y simuladores generados por IA.</p>
+                <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene recursos para estudio extraidos de internet (videos y textos) y cuestionarios de estudio generados por IA.</p>
                 <button class="btn-outline" style="width:100%; border-color: var(--border);">📖 Entrar al Módulo</button>
             </div>`).join('');
     }

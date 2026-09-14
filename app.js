@@ -605,3 +605,178 @@ window.eliminarTema = async function(id) {
         cargarAdminGestion();
     }
 }
+// ======================================================================
+// 🚀 PARCHE AUTOMÁTICO: EDICIÓN Y ORDEN DE MÓDULOS (Añadir al final)
+// ======================================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Inyectar visualmente el campo de "Orden" en el formulario sin tocar el HTML
+    const grupoMateria = document.getElementById("input-materia").parentElement;
+    grupoMateria.insertAdjacentHTML('afterend', `
+        <div class="input-group" id="grupo-orden">
+            <label>Orden de aparición (Número)</label>
+            <input type="number" id="input-orden" class="input-text" placeholder="Ej: 1" value="1">
+        </div>
+    `);
+
+    // Variable global para saber si estamos editando
+    window.modoEdicionId = null;
+
+    // 2. Secuestrar el botón original de "Procesar y Publicar" para cambiar su comportamiento
+    const btnOriginal = document.getElementById("btn-generar-tema-admin");
+    if (btnOriginal) {
+        // Clonamos el botón para matar su evento original
+        const btnNuevo = btnOriginal.cloneNode(true);
+        btnOriginal.parentNode.replaceChild(btnNuevo, btnOriginal);
+        
+        // Añadimos el nuevo super-evento (Crea o Edita)
+        btnNuevo.addEventListener("click", async () => {
+            const materia = document.getElementById("input-materia").value;
+            const tituloTema = document.getElementById("input-nuevo-tema").value.trim();
+            const orden = parseInt(document.getElementById("input-orden").value) || 1;
+            const videosRaw = document.getElementById("input-videos").value;
+            const lecturasRaw = document.getElementById("input-lecturas").value;
+            
+            if (!tituloTema) return alert("El título es obligatorio.");
+            
+            const status = document.getElementById("admin-status");
+            btnNuevo.disabled = true;
+            status.style.color = "var(--primary-light)";
+            status.innerHTML = window.modoEdicionId ? "<i class='fas fa-spinner fa-spin'></i> Actualizando tema..." : "<i class='fas fa-spinner fa-spin'></i> Generando resumen con IA y guardando links...";
+
+            try {
+                const extraerLinks = (texto) => texto.split('\n').filter(line => line.includes('http')).map(line => {
+                    const parts = line.split('http');
+                    let title = parts[0].replace(/^[\d\.\-\*]*\s*/, '').replace(/:\s*$/, '').trim();
+                    return { titulo: title || "Enlace sugerido", url: 'http' + parts[1].trim() };
+                });
+
+                if (window.modoEdicionId) {
+                    // ACTUALIZAR (usamos merge:true para NO borrar el resumen de IA original)
+                    await setDoc(doc(db, "temas_globales", window.modoEdicionId), {
+                        materia: materia, titulo: tituloTema, orden: orden,
+                        videos_recomendados: extraerLinks(videosRaw),
+                        lecturas_recomendadas: extraerLinks(lecturasRaw)
+                    }, { merge: true });
+                    
+                    status.innerHTML = "<i class='fas fa-check'></i> Tema actualizado con éxito.";
+                    btnNuevo.innerHTML = "<i class='fas fa-magic'></i> Procesar y Publicar Tema";
+                    window.modoEdicionId = null;
+                } else {
+                    // CREAR NUEVO (Lógica original con IA y Orden incluido)
+                    const promptText = `Actúa como profesor de ${materia}. Escribe un resumen introductorio de máximo 150 palabras para el tema: "${tituloTema}". Devuelve EXCLUSIVAMENTE un JSON con esta estructura exacta (sin formato markdown): { "resumen_teorico": "Tu texto aquí..." }`;
+                    const res = await fetch('/.netlify/functions/gemini', {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ prompt: promptText, modelo: "gemini-3.6-flash" })
+                    });
+                    const data = await res.json();
+                    const contenidoIA = JSON.parse(data.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim());
+
+                    await addDoc(collection(db, "temas_globales"), {
+                        materia, titulo: tituloTema, orden, resumen_teorico: contenidoIA.resumen_teorico,
+                        videos_recomendados: extraerLinks(videosRaw), lecturas_recomendadas: extraerLinks(lecturasRaw),
+                        fecha_creacion: new Date().toISOString(), creador: usuarioActual.email
+                    });
+                    status.innerHTML = "<i class='fas fa-check'></i> Tema creado y guardado con éxito.";
+                }
+
+                status.style.color = "var(--success)";
+                document.getElementById("input-nuevo-tema").value = "";
+                document.getElementById("input-orden").value = "1";
+                document.getElementById("input-videos").value = "";
+                document.getElementById("input-lecturas").value = "";
+                
+                // Forzar recarga visual modificando el DOM
+                document.getElementById("lista-gestion-temas").innerHTML = "Recargando...";
+            } catch (error) {
+                status.style.color = "var(--danger)";
+                status.innerHTML = `<i class='fas fa-times'></i> Error: ${error.message}`;
+            } finally {
+                btnNuevo.disabled = false;
+                setTimeout(() => status.innerHTML = "", 5000);
+            }
+        });
+    }
+
+    // 3. Interceptar la lista de temas del Admin para inyectar el botón de Editar y ordenarlos (MutationObserver)
+    const containerAdmin = document.getElementById("lista-gestion-temas");
+    if (containerAdmin) {
+        new MutationObserver(async (mutations) => {
+            if (containerAdmin.dataset.parcheado) return; // Evita bucle infinito
+            containerAdmin.dataset.parcheado = "true";
+            
+            const snap = await getDocs(collection(db, "temas_globales"));
+            let temasArray = [];
+            snap.forEach(d => temasArray.push({ id: d.id, ...d.data() }));
+            temasArray.sort((a, b) => (a.orden || 0) - (b.orden || 0)); // Orden matemático
+
+            containerAdmin.innerHTML = temasArray.map(d => `
+                <div class="admin-list-item" style="flex-direction: column; align-items: stretch; gap: 10px;">
+                    <div style="display:flex; justify-content: space-between; align-items:center;">
+                        <div>
+                            <span style="background: var(--bg); padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; margin-right: 10px;">${d.materia} (Orden: ${d.orden || 0})</span>
+                            <strong>${d.titulo}</strong>
+                        </div>
+                        <div>
+                            <button class="btn-outline" style="padding: 6px 12px; font-size: 12px; color: var(--primary-light); border-color: var(--primary-light);" onclick="editarTema('${d.id}')"><i class="fas fa-edit"></i></button>
+                            <button class="btn-outline" style="padding: 6px 12px; font-size: 12px; color: var(--danger); border-color: var(--danger);" onclick="eliminarTema('${d.id}')"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                </div>`).join('');
+            
+            setTimeout(() => containerAdmin.dataset.parcheado = "", 200);
+        }).observe(containerAdmin, { childList: true });
+    }
+});
+
+// 4. Función global para cargar datos al formulario al presionar "Editar"
+window.editarTema = async function(id) {
+    const docSnap = await getDoc(doc(db, "temas_globales", id));
+    if (docSnap.exists()) {
+        const d = docSnap.data();
+        document.getElementById("input-materia").value = d.materia;
+        document.getElementById("input-nuevo-tema").value = d.titulo;
+        document.getElementById("input-orden").value = d.orden || 1;
+        document.getElementById("input-videos").value = d.videos_recomendados ? d.videos_recomendados.map(v => v.titulo + " " + v.url).join('\n') : "";
+        document.getElementById("input-lecturas").value = d.lecturas_recomendadas ? d.lecturas_recomendadas.map(l => l.titulo + " " + l.url).join('\n') : "";
+        
+        window.modoEdicionId = id;
+        document.getElementById("btn-generar-tema-admin").innerHTML = "<i class='fas fa-save'></i> Actualizar Tema (Sin usar IA)";
+        window.switchAdmin('crear-tema'); 
+        window.scrollTo(0, 0);
+    }
+}
+
+// 5. Sobrescribir directamente la función de vista del alumno para que aplique el orden
+window.abrirMateria = async function(materia) {
+    materiaActual = materia;
+    document.getElementById("titulo-materia-seleccionada").textContent = "Módulos de " + materia;
+    
+    // Función original de interfaz (mostrarSeccion) está encapsulada, simulamos el click
+    document.querySelectorAll('.content-area > div').forEach(div => div.classList.add('hidden'));
+    document.getElementById('lista-temas-section').classList.remove('hidden');
+    window.scrollTo(0, 0);
+
+    const contenedor = document.getElementById("student-temas-list");
+    contenedor.innerHTML = "<p>Cargando módulos...</p>";
+
+    const snap = await getDocs(query(collection(db, "temas_globales"), where("materia", "==", materia)));
+    
+    if (snap.empty) {
+        contenedor.innerHTML = "<p style='grid-column: 1/-1;'>Pronto añadiremos módulos para esta materia.</p>";
+    } else {
+        let temasArray = [];
+        snap.forEach(doc => temasArray.push({ id: doc.id, ...doc.data() }));
+        temasArray.sort((a, b) => (a.orden || 0) - (b.orden || 0)); // Aplica el orden del admin
+
+        contenedor.innerHTML = temasArray.map(data => `
+            <div class="topic-card" onclick="abrirTemaEstudio('${data.id}', '${data.titulo.replace(/'/g, "\\'")}')">
+                <div style="font-size: 24px; color: var(--primary-light); margin-bottom: 10px;">
+                    <i class="fas fa-layer-group"></i>
+                </div>
+                <h3>${data.titulo}</h3>
+                <p style="color: var(--text-light); font-size: 14px; margin: 0 0 15px 0;">Contiene resumen IA, recursos y simuladores.</p>
+                <button class="btn-outline" style="width:100%; border-color: var(--border);">📖 Entrar al Módulo</button>
+            </div>`).join('');
+    }
+}
